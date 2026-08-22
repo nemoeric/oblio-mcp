@@ -1,20 +1,16 @@
 #!/usr/bin/env node
 import { createOblioMcpServer } from "./mcpServer.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { getConfig } from "./config.js";
 
 // Main function to start the server
 const startServer = async () => {
-  // Check environment variables
-  if (!process.env.OBLIO_API_EMAIL || !process.env.OBLIO_API_SECRET) {
-    console.error(
-      "Error: OBLIO_API_EMAIL and OBLIO_API_SECRET environment variables must be set"
-    );
-    process.exit(1);
-  }
-
   try {
-    // Create the MCP server
-    const server = createOblioMcpServer();
+    // Validate environment configuration early
+    const config = getConfig();
+
+    // Create the MCP server with config
+    const server = createOblioMcpServer(config);
 
     // Create a stdio transport for command line usage
     const transport = new StdioServerTransport();

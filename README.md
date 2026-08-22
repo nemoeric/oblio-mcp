@@ -12,13 +12,18 @@ Create invoices, manage documents, collect payments, query nomenclatures, and su
 
 ## Setup
 
-1. **Get your Oblio API credentials:**
-   - Log in at [oblio.eu](https://www.oblio.eu)
-   - Go to **Setari > Date Cont**
-   - Copy your **email** and **API secret**
-   - Note your **company CIF** (e.g. `RO37311090`)
+### 1. Get your Oblio API credentials
 
-2. **Add to your Claude Desktop config or other AI tool** (`claude_desktop_config.json`):
+- Log in at [oblio.eu](https://www.oblio.eu)
+- Go to **Setari > Date Cont**
+- Copy your **email** and **API secret**
+- Note your **company CIF** (e.g. `RO37311090`)
+
+### 2. Add to your Claude Desktop config
+
+Environment variables are passed through the MCP client configuration:
+
+Add to your Claude Desktop config or other MCP-compatible AI tool (`claude_desktop_config.json`):
 
 ### Using npx (coming soon)
 
@@ -101,11 +106,21 @@ docker build -t oblio-mcp .
 
 ## Environment Variables
 
-| Variable           | Required | Description                                                            |
-| ------------------ | -------- | ---------------------------------------------------------------------- |
-| `OBLIO_API_EMAIL`  | Yes      | Your Oblio account email                                               |
-| `OBLIO_API_SECRET` | Yes      | API secret from Oblio > Setari > Date Cont                             |
-| `CIF`              | No       | Default company CIF. Can also be set at runtime via the `set_cif` tool |
+### Required
+
+| Variable           | Description                    |
+| ------------------ | ------------------------------ |
+| `OBLIO_API_EMAIL`  | Your Oblio account email       |
+| `OBLIO_API_SECRET` | API secret from Oblio settings |
+
+### Optional
+
+| Variable      | Description                             | Default |
+| ------------- | --------------------------------------- | ------- |
+| `CIF`         | Company CIF (can also be set via API)   | None    |
+| `LOG_LEVEL`   | Logging level: error, warn, info, debug | `info`  |
+| `API_TIMEOUT` | API request timeout in milliseconds     | `30000` |
+| `PORT`        | Server port for future HTTP transport   | None    |
 
 ## Tools
 
@@ -158,6 +173,7 @@ If you encounter issues:
 2. Check that `OBLIO_API_EMAIL` and `OBLIO_API_SECRET` are correctly set
 3. Ensure your company CIF is set (via `CIF` env var or the `set_cif` tool)
 4. Confirm you have the necessary permissions for the operations you're performing
+5. For debugging, set `LOG_LEVEL=debug` in your MCP client configuration
 
 ## License
 

@@ -1,16 +1,15 @@
 import OblioApi from "@obliosoftware/oblioapi";
+import type { EnvConfig } from "./config.js";
 
-let oblio: OblioApi | null = null;
-
-const getOblioClient = () => {
-  if (!oblio) {
-    oblio = new OblioApi(
-      process.env.OBLIO_API_EMAIL || "",
-      process.env.OBLIO_API_SECRET || ""
-    );
+export function createOblioClient(config: EnvConfig): OblioApi {
+  const client = new OblioApi(
+    config.OBLIO_API_EMAIL,
+    config.OBLIO_API_SECRET
+  );
+  
+  if (config.CIF) {
+    client.setCif(config.CIF);
   }
-  oblio.setCif(process.env.CIF || "");
-  return oblio;
-};
-
-export const oblioClient = getOblioClient();
+  
+  return client;
+}
