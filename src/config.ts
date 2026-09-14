@@ -22,7 +22,20 @@ const envSchema = z.object({
     .refine((val) => !val || val.length >= 2, {
       message:
         "CIF must be at least 2 characters when provided (e.g., RO12345678)",
-    }),
+    })
+    .describe(
+      "When set, the server is locked to this company: set_cif is not exposed and documents cannot be created for another CIF",
+    ),
+  OBLIO_ACCESS: z
+    .enum(["read", "write", "full"], {
+      message:
+        "OBLIO_ACCESS must be one of: read (default), write, full",
+    })
+    .optional()
+    .default("read")
+    .describe(
+      "read: consult only. write: also create, collect, cancel/restore, send to SPV. full: also delete",
+    ),
   PORT: z
     .string({
       message:

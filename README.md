@@ -115,12 +115,44 @@ docker build -t oblio-mcp .
 
 ### Optional
 
-| Variable      | Description                             | Default |
-| ------------- | --------------------------------------- | ------- |
-| `CIF`         | Company CIF (can also be set via API)   | None    |
-| `LOG_LEVEL`   | Logging level: error, warn, info, debug | `info`  |
-| `API_TIMEOUT` | API request timeout in milliseconds     | `30000` |
-| `PORT`        | Server port for future HTTP transport   | None    |
+| Variable       | Description                                                                 | Default |
+| -------------- | --------------------------------------------------------------------------- | ------- |
+| `CIF`          | Company CIF. When set, the server is locked to this company (see below)     | None    |
+| `OBLIO_ACCESS` | Which tools are exposed: `read`, `write` or `full` (see below)              | `read`  |
+| `LOG_LEVEL`    | Logging level: error, warn, info, debug                                     | `info`  |
+| `API_TIMEOUT`  | API request timeout in milliseconds                                         | `30000` |
+| `PORT`         | Server port for future HTTP transport                                       | None    |
+
+### Access levels
+
+`OBLIO_ACCESS` decides which tools (and matching prompts) the server exposes. Anything above
+the level simply does not exist for the agent.
+
+| Level   | Tools                                                                                                   |
+| ------- | ------------------------------------------------------------------------------------------------------- |
+| `read`  | `get_document`, `list_documents`, `get_nomenclatures`, `get_einvoice_archive`, `get_cif` (+ `set_cif`)  |
+| `write` | `read` + `create_document`, `collect_payment`, `cancel_document`, `restore_document`, `create_einvoice` |
+| `full`  | `write` + `delete_document`                                                                             |
+
+`write` already reaches outside Oblio: `create_einvoice` and `spvExtern` send to ANAF, and
+`sendEmail` has Oblio email the document to the client.
+
+### Several companies
+
+One Oblio login often gives access to several companies. Run one server per company, with the
+same credentials and a different `CIF`:
+
+- `set_cif` is not exposed, so the agent cannot switch company;
+- `create_document` refuses a `cif` other than the configured one (`RO12345678` and `12345678`
+  are the same company) and fills it in when omitted;
+- every other call already uses the configured CIF.
+
+The access token is kept in memory, per process. The official SDK caches it by default in
+`<working directory>/storage/.access_token`, readable by everyone and shared by every server
+started from that directory whatever its account — this fork never writes that file.
+
+`get_nomenclatures` with type `companies` still lists every company of the login: it is a list
+of names and CIFs, not access to their documents.
 
 ## Tools
 
@@ -152,7 +184,7 @@ docker build -t oblio-mcp .
 | Tool                   | Description                                                                                                                             |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `create_einvoice`      | Submits an existing invoice to Romania's SPV system for e-Factura. Returns status code: 0=processing, 1=success, 2=errors, -1=not sent. |
-| `get_einvoice_archive` | Downloads the e-Invoice archive (XML) from SPV for a previously submitted invoice.                                                      |
+| `get_einvoice_archive` | Downloads the e-Invoice archive (signed XML) from SPV for a previously submitted invoice, returned as an embedded base64 resource.     |
 
 ### Configuration
 
@@ -163,7 +195,7 @@ docker build -t oblio-mcp .
 
 ## Prompts
 
-The server includes 28 prompt templates for common operations: creating documents, retrieving documents, cancelling/restoring/deleting documents, searching nomenclatures, collecting payments, listing invoices, and managing e-Factura submissions.
+The server includes 28 prompt templates for common operations: creating documents, retrieving documents, cancelling/restoring/deleting documents, searching nomenclatures, collecting payments, listing invoices, and managing e-Factura submissions. A prompt is only offered when the tool it relies on is exposed.
 
 ## Troubleshooting
 

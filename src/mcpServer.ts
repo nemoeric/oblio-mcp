@@ -1,28 +1,121 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { createOblioClient } from "./oblioClient.js";
+import {
+  createOblioClient,
+  deleteDocument,
+  getEinvoiceArchive,
+  sendEinvoice,
+} from "./oblioClient.js";
 import { formatError } from "./errors.js";
 import { createDocumentInputSchema, collectSchema } from "./schema.js";
 import type { EnvConfig } from "./config.js";
 
+type Access = EnvConfig["OBLIO_ACCESS"];
+
+const ACCESS_RANK: Record<Access, number> = { read: 0, write: 1, full: 2 };
+
+// Minimum OBLIO_ACCESS level for each tool.
+const TOOL_ACCESS: Record<string, Access> = {
+  get_document: "read",
+  list_documents: "read",
+  get_nomenclatures: "read",
+  get_einvoice_archive: "read",
+  get_cif: "read",
+  set_cif: "read",
+  create_document: "write",
+  collect_payment: "write",
+  cancel_document: "write",
+  restore_document: "write",
+  create_einvoice: "write",
+  delete_document: "full",
+};
+
+// Each prompt only makes sense if the tool it points to is exposed.
+const PROMPT_TOOL: Record<string, string> = {
+  createInvoice: "create_document",
+  createProforma: "create_document",
+  createNotice: "create_document",
+  getInvoice: "get_document",
+  getProforma: "get_document",
+  getNotice: "get_document",
+  cancelInvoice: "cancel_document",
+  cancelProforma: "cancel_document",
+  cancelNotice: "cancel_document",
+  restoreInvoice: "restore_document",
+  restoreProforma: "restore_document",
+  restoreNotice: "restore_document",
+  deleteInvoice: "delete_document",
+  deleteProforma: "delete_document",
+  deleteNotice: "delete_document",
+  getProductsNomenclature: "get_nomenclatures",
+  getClientsNomenclature: "get_nomenclatures",
+  getVatRatesNomenclature: "get_nomenclatures",
+  getCompaniesNomenclature: "get_nomenclatures",
+  getDocumentSeriesNomenclature: "get_nomenclatures",
+  getLanguagesNomenclature: "get_nomenclatures",
+  getManagementNomenclature: "get_nomenclatures",
+  collectPayment: "collect_payment",
+  getInvoiceList: "list_documents",
+  sendInvoiceToSpv: "create_einvoice",
+  getEinvoiceFromSpv: "get_einvoice_archive",
+  setCif: "set_cif",
+  getCif: "get_cif",
+};
+
+/** "RO 37311090", "ro37311090" and "37311090" are the same company. */
+const normalizeCif = (cif: string) =>
+  cif.replace(/\s+/g, "").replace(/^RO/i, "");
+
 export const createOblioMcpServer = (config: EnvConfig) => {
   const oblioClient = createOblioClient(config);
+  const lockedCif = config.CIF;
   const server = new McpServer({
     name: "oblio-server",
     version: "1.0.0",
   });
 
+  const exposedTools = new Set<string>();
+  const isToolAllowed = (name: string) => {
+    // A server configured for one company never lets the agent switch to another.
+    if (name === "set_cif" && lockedCif) return false;
+    const required = TOOL_ACCESS[name];
+    return (
+      required !== undefined &&
+      ACCESS_RANK[config.OBLIO_ACCESS] >= ACCESS_RANK[required]
+    );
+  };
+
+  const registerTool = ((name: string, ...rest: unknown[]) => {
+    if (!isToolAllowed(name)) return undefined;
+    exposedTools.add(name);
+    return (server.registerTool as (...args: unknown[]) => unknown).call(
+      server,
+      name,
+      ...rest,
+    );
+  }) as unknown as typeof server.registerTool;
+
+  const registerPrompt = ((name: string, ...rest: unknown[]) => {
+    if (!exposedTools.has(PROMPT_TOOL[name] ?? "")) return undefined;
+    return (server.registerPrompt as (...args: unknown[]) => unknown).call(
+      server,
+      name,
+      ...rest,
+    );
+  }) as unknown as typeof server.registerPrompt;
+
   // ──────────────────────────────────────────────
   //  TOOLS
   // ──────────────────────────────────────────────
 
-  server.registerTool(
+  registerTool(
     "create_document",
     {
       title: "Create Document",
       description:
         "Creates an invoice (factura), proforma, or delivery notice (aviz) in Oblio via POST /api/docs/{type}. " +
-        "Required fields: cif, client (with at least name), seriesName, issueDate, and at least one product. " +
+        "Required fields: client (with at least name), seriesName, issueDate, and at least one product. " +
+        "cif is the issuing company; it can be omitted when the server is configured for a company. " +
         "Optional: inline payment via collect, reference to existing proforma/notice via referenceDocument, " +
         "stock deduction via useStock, auto e-Factura submission via spvExtern, and idempotencyKey to prevent duplicates. " +
         "Returns: seriesName, number, and a link to view/download the created document.",
@@ -36,7 +129,20 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
     async ({ type, data }) => {
       try {
-        const response = await oblioClient.createDoc(type, data);
+        if (
+          lockedCif &&
+          data.cif &&
+          normalizeCif(data.cif) !== normalizeCif(lockedCif)
+        ) {
+          throw new Error(
+            `This server is locked to company ${lockedCif}: refusing to create a document for ${data.cif}`,
+          );
+        }
+        // Without a lock, an omitted cif falls back to the one chosen with set_cif.
+        const response = await oblioClient.createDoc(type, {
+          ...data,
+          cif: lockedCif ?? data.cif,
+        });
         return {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
         };
@@ -54,7 +160,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_document",
     {
       title: "Get Document",
@@ -102,7 +208,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "delete_document",
     {
       title: "Delete Document",
@@ -127,10 +233,6 @@ export const createOblioMcpServer = (config: EnvConfig) => {
           .describe(
             "true to also delete the associated payment collection (invoices only). Default false",
           ),
-        idempotencyKey: z
-          .string()
-          .optional()
-          .describe("Unique key to prevent duplicate deletion"),
       },
       annotations: {
         readOnlyHint: false,
@@ -139,9 +241,15 @@ export const createOblioMcpServer = (config: EnvConfig) => {
         openWorldHint: true,
       },
     },
-    async ({ type, seriesName, number, deleteCollect, idempotencyKey }) => {
+    async ({ type, seriesName, number, deleteCollect }) => {
       try {
-        const response = await oblioClient.delete(type, seriesName, number);
+        const response = await deleteDocument(
+          oblioClient,
+          type,
+          seriesName,
+          number,
+          deleteCollect,
+        );
         return {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
         };
@@ -159,7 +267,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "cancel_document",
     {
       title: "Cancel Document",
@@ -210,7 +318,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "restore_document",
     {
       title: "Restore Document",
@@ -261,7 +369,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_nomenclatures",
     {
       title: "Get Nomenclatures",
@@ -325,7 +433,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "collect_payment",
     {
       title: "Collect Payment",
@@ -368,7 +476,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_documents",
     {
       title: "List Documents",
@@ -488,7 +596,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "create_einvoice",
     {
       title: "Send e-Invoice to SPV",
@@ -509,10 +617,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
     async ({ seriesName, number }) => {
       try {
-        const response = await oblioClient.createDoc("einvoice", {
-          seriesName,
-          number,
-        });
+        const response = await sendEinvoice(oblioClient, seriesName, number);
         return {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
         };
@@ -530,14 +635,14 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_einvoice_archive",
     {
       title: "Get e-Invoice Archive from SPV",
       description:
         "Downloads the e-Invoice archive (XML) from Romania's SPV system via GET /api/docs/einvoice. " +
         "The invoice must have been previously submitted to SPV. " +
-        "Returns the SPV archive data for the specified invoice.",
+        "Returns the archive file (signed XML) as an embedded resource, base64-encoded.",
       inputSchema: {
         seriesName: z.string().describe("Invoice series name (e.g. FCT)"),
         number: z.number().describe("Invoice number"),
@@ -551,9 +656,30 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
     async ({ seriesName, number }) => {
       try {
-        const response = await oblioClient.get("einvoice", seriesName, number);
+        const archive = await getEinvoiceArchive(oblioClient, seriesName, number);
+        if ("json" in archive) {
+          return {
+            content: [
+              { type: "text", text: JSON.stringify(archive.json, null, 2) },
+            ],
+          };
+        }
+        const filename = `einvoice-${seriesName}-${number}.zip`;
         return {
-          content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+          content: [
+            {
+              type: "text",
+              text: `SPV archive for ${seriesName} ${number}: ${archive.file.length} bytes (${archive.mimeType}).`,
+            },
+            {
+              type: "resource",
+              resource: {
+                uri: `oblio://einvoice/${encodeURIComponent(oblioClient.getCif())}/${encodeURIComponent(seriesName)}/${number}/${filename}`,
+                mimeType: archive.mimeType,
+                blob: archive.file.toString("base64"),
+              },
+            },
+          ],
         };
       } catch (error) {
         return {
@@ -569,7 +695,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "set_cif",
     {
       title: "Set Company CIF",
@@ -607,7 +733,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_cif",
     {
       title: "Get Company CIF",
@@ -650,7 +776,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
   //  PROMPTS
   // ──────────────────────────────────────────────
 
-  server.registerPrompt(
+  registerPrompt(
     "createInvoice",
     {
       title: "Create Invoice",
@@ -685,7 +811,7 @@ You can use the create_document tool with the type "invoice" to create the invoi
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "createProforma",
     {
       title: "Create Proforma",
@@ -720,7 +846,7 @@ You can use the create_document tool with the type "proforma" to create the prof
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "createNotice",
     {
       title: "Create Notice (Aviz)",
@@ -755,7 +881,7 @@ You can use the create_document tool with the type "notice" to create the notice
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getInvoice",
     {
       title: "Get Invoice",
@@ -780,7 +906,7 @@ You can use the get_document tool to fetch the invoice details.`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getProforma",
     {
       title: "Get Proforma",
@@ -805,7 +931,7 @@ You can use the get_document tool to fetch the proforma details.`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getNotice",
     {
       title: "Get Notice (Aviz)",
@@ -831,7 +957,7 @@ You can use the get_document tool to fetch the notice details.`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "cancelInvoice",
     {
       title: "Cancel Invoice",
@@ -857,7 +983,7 @@ You can use the cancel_document tool with type "invoice".`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "cancelProforma",
     {
       title: "Cancel Proforma",
@@ -882,7 +1008,7 @@ You can use the cancel_document tool with type "proforma".`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "cancelNotice",
     {
       title: "Cancel Notice (Aviz)",
@@ -907,7 +1033,7 @@ You can use the cancel_document tool with type "notice".`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "restoreInvoice",
     {
       title: "Restore Invoice",
@@ -933,7 +1059,7 @@ You can use the restore_document tool with type "invoice".`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "restoreProforma",
     {
       title: "Restore Proforma",
@@ -958,7 +1084,7 @@ You can use the restore_document tool with type "proforma".`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "restoreNotice",
     {
       title: "Restore Notice (Aviz)",
@@ -983,7 +1109,7 @@ You can use the restore_document tool with type "notice".`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "deleteInvoice",
     {
       title: "Delete Invoice",
@@ -1009,7 +1135,7 @@ You can use the delete_document tool with type "invoice". Note: only the last do
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "deleteProforma",
     {
       title: "Delete Proforma",
@@ -1035,7 +1161,7 @@ You can use the delete_document tool with type "proforma". Note: only the last d
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "deleteNotice",
     {
       title: "Delete Notice (Aviz)",
@@ -1061,7 +1187,7 @@ You can use the delete_document tool with type "notice". Note: only the last doc
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getProductsNomenclature",
     {
       title: "Search Products",
@@ -1102,7 +1228,7 @@ Use the get_nomenclatures tool with type "products". Pass the above as key/value
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getClientsNomenclature",
     {
       title: "Search Clients",
@@ -1135,7 +1261,7 @@ Use the get_nomenclatures tool with type "clients". Pass the above as key/value 
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getVatRatesNomenclature",
     {
       title: "Get VAT Rates",
@@ -1156,7 +1282,7 @@ Use the get_nomenclatures tool with type "vat_rates". No additional filters are 
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getCompaniesNomenclature",
     {
       title: "Get Companies",
@@ -1177,7 +1303,7 @@ Use the get_nomenclatures tool with type "companies". No additional filters are 
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getDocumentSeriesNomenclature",
     {
       title: "Get Document Series",
@@ -1199,7 +1325,7 @@ Use the get_nomenclatures tool with type "series". No additional filters are nee
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getLanguagesNomenclature",
     {
       title: "Get Languages",
@@ -1221,7 +1347,7 @@ Use the get_nomenclatures tool with type "languages". No additional filters are 
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getManagementNomenclature",
     {
       title: "Get Stock Management Locations",
@@ -1243,7 +1369,7 @@ Use the get_nomenclatures tool with type "management". No additional filters are
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "collectPayment",
     {
       title: "Collect Invoice Payment",
@@ -1307,7 +1433,7 @@ Use the collect_payment tool. Pass seriesName=${invoiceSeriesName}, number=${inv
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getInvoiceList",
     {
       title: "List Invoices",
@@ -1383,7 +1509,7 @@ When returning results, indicate for each invoice whether it is paid or unpaid b
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "sendInvoiceToSpv",
     {
       title: "Send Invoice to SPV",
@@ -1409,7 +1535,7 @@ Use the create_einvoice tool.`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getEinvoiceFromSpv",
     {
       title: "Get e-Invoice from SPV",
@@ -1435,7 +1561,7 @@ Use the get_einvoice_archive tool.`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "setCif",
     {
       title: "Set Company CIF",
@@ -1460,7 +1586,7 @@ Use the set_cif tool.`,
     }),
   );
 
-  server.registerPrompt(
+  registerPrompt(
     "getCif",
     {
       title: "Get Company CIF",

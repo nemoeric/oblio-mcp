@@ -52,8 +52,9 @@ export const createDocumentInputSchema = {
   data: z.object({
     cif: z
       .string()
+      .optional()
       .describe(
-        "Your company CIF (tax identification number), e.g. RO37311090"
+        "Your company CIF (tax identification number), e.g. RO37311090. Omit it when the server is configured for a company (CIF env var); otherwise the CIF chosen with set_cif is used"
       ),
     client: z
       .object({
