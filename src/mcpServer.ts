@@ -1,6 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { createOblioClient } from "./oblioClient.js";
+import {
+  createOblioClient,
+  deleteDocument,
+  getEinvoiceArchive,
+  sendEinvoice,
+} from "./oblioClient.js";
 import { formatError } from "./errors.js";
 import { createDocumentInputSchema, collectSchema } from "./schema.js";
 import type { EnvConfig } from "./config.js";
@@ -127,10 +132,6 @@ export const createOblioMcpServer = (config: EnvConfig) => {
           .describe(
             "true to also delete the associated payment collection (invoices only). Default false",
           ),
-        idempotencyKey: z
-          .string()
-          .optional()
-          .describe("Unique key to prevent duplicate deletion"),
       },
       annotations: {
         readOnlyHint: false,
@@ -139,9 +140,15 @@ export const createOblioMcpServer = (config: EnvConfig) => {
         openWorldHint: true,
       },
     },
-    async ({ type, seriesName, number, deleteCollect, idempotencyKey }) => {
+    async ({ type, seriesName, number, deleteCollect }) => {
       try {
-        const response = await oblioClient.delete(type, seriesName, number);
+        const response = await deleteDocument(
+          oblioClient,
+          type,
+          seriesName,
+          number,
+          deleteCollect,
+        );
         return {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
         };
@@ -509,10 +516,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
     async ({ seriesName, number }) => {
       try {
-        const response = await oblioClient.createDoc("einvoice", {
-          seriesName,
-          number,
-        });
+        const response = await sendEinvoice(oblioClient, seriesName, number);
         return {
           content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
         };
@@ -537,7 +541,7 @@ export const createOblioMcpServer = (config: EnvConfig) => {
       description:
         "Downloads the e-Invoice archive (XML) from Romania's SPV system via GET /api/docs/einvoice. " +
         "The invoice must have been previously submitted to SPV. " +
-        "Returns the SPV archive data for the specified invoice.",
+        "Returns the archive file (signed XML) as an embedded resource, base64-encoded.",
       inputSchema: {
         seriesName: z.string().describe("Invoice series name (e.g. FCT)"),
         number: z.number().describe("Invoice number"),
@@ -551,9 +555,30 @@ export const createOblioMcpServer = (config: EnvConfig) => {
     },
     async ({ seriesName, number }) => {
       try {
-        const response = await oblioClient.get("einvoice", seriesName, number);
+        const archive = await getEinvoiceArchive(oblioClient, seriesName, number);
+        if ("json" in archive) {
+          return {
+            content: [
+              { type: "text", text: JSON.stringify(archive.json, null, 2) },
+            ],
+          };
+        }
+        const filename = `einvoice-${seriesName}-${number}.zip`;
         return {
-          content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+          content: [
+            {
+              type: "text",
+              text: `SPV archive for ${seriesName} ${number}: ${archive.file.length} bytes (${archive.mimeType}).`,
+            },
+            {
+              type: "resource",
+              resource: {
+                uri: `oblio://einvoice/${encodeURIComponent(oblioClient.getCif())}/${encodeURIComponent(seriesName)}/${number}/${filename}`,
+                mimeType: archive.mimeType,
+                blob: archive.file.toString("base64"),
+              },
+            },
+          ],
         };
       } catch (error) {
         return {

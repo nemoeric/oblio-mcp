@@ -152,7 +152,7 @@ docker build -t oblio-mcp .
 | Tool                   | Description                                                                                                                             |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `create_einvoice`      | Submits an existing invoice to Romania's SPV system for e-Factura. Returns status code: 0=processing, 1=success, 2=errors, -1=not sent. |
-| `get_einvoice_archive` | Downloads the e-Invoice archive (XML) from SPV for a previously submitted invoice.                                                      |
+| `get_einvoice_archive` | Downloads the e-Invoice archive (signed XML) from SPV for a previously submitted invoice, returned as an embedded base64 resource.     |
 
 ### Configuration
 
